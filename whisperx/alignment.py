@@ -90,6 +90,8 @@ def load_align_model(language_code: str, device: str, model_name: Optional[str] 
                          f"then pass the model name via --align_model [MODEL_NAME]")
             raise ValueError(f"No default align-model for language: {language_code}")
 
+    tokenizer = None
+
     if model_name in torchaudio.pipelines.__all__:
         pipeline_type = "torchaudio"
         bundle = torchaudio.pipelines.__dict__[model_name]
@@ -99,6 +101,7 @@ def load_align_model(language_code: str, device: str, model_name: Optional[str] 
     else:
         try:
             processor = Wav2Vec2Processor.from_pretrained(model_name, cache_dir=model_dir, local_files_only=model_cache_only)
+            tokenizer = processor.tokenizer
             align_model = Wav2Vec2ForCTC.from_pretrained(model_name, cache_dir=model_dir, local_files_only=model_cache_only)
         except Exception as e:
             print(e)
@@ -109,7 +112,12 @@ def load_align_model(language_code: str, device: str, model_name: Optional[str] 
         labels = processor.tokenizer.get_vocab()
         align_dictionary = {char.lower(): code for char,code in processor.tokenizer.get_vocab().items()}
 
-    align_metadata = {"language": language_code, "dictionary": align_dictionary, "type": pipeline_type}
+    align_metadata = {
+        "language": language_code,
+        "dictionary": align_dictionary,
+        "type": pipeline_type,
+        "tokenizer": tokenizer,
+    }
 
     return align_model, align_metadata
 
@@ -142,6 +150,7 @@ def align(
     model_dictionary = align_model_metadata["dictionary"]
     model_lang = align_model_metadata["language"]
     model_type = align_model_metadata["type"]
+    model_tokenizer = align_model_metadata.get("tokenizer")
 
     # Use language-specific Punkt model if available otherwise we fallback to English.
     punkt_lang = PUNKT_LANGUAGES.get(model_lang, 'english')
