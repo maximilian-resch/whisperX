@@ -186,35 +186,98 @@ def align(
         else:
             per_word = text
 
-        clean_char, clean_cdx = [], []
-        for cdx, char in enumerate(text):
-            char_ = char.lower()
-            # wav2vec2 models use "|" character to represent spaces
-            if model_lang not in LANGUAGES_WITHOUT_SPACES:
-                char_ = char_.replace(" ", "|")
+        if model_tokenizer is not None:
+            clean_char = model_tokenizer.tokenize(text)
 
-            # ignore whitespace at beginning and end of transcript
-            if cdx < num_leading:
-                pass
-            elif cdx > len(text) - num_trailing - 1:
-                pass
-            elif char_ in model_dictionary.keys():
-                clean_char.append(char_)
-                clean_cdx.append(cdx)
-            elif char_ not in (" ", "|"):
-                # unknown char (digit, symbol, foreign script) — use wildcard
-                clean_char.append(char_)
-                clean_cdx.append(cdx)
+            clean_wdx = []
+            current_word = 0
+            for token in clean_char:
+                clean_wdx.append(current_word)
+                if token == "|":
+                    current_word += 1
 
-        clean_wdx = list(range(len(per_word)))
+            clean_cdx = list(range(len(clean_char)))
+
+            logger.info("tokenizer output: %s", clean_char)
+        else:
+            clean_wdx = list(range(len(per_word)))
+
+            clean_char, clean_cdx = [], []
+            for cdx, char in enumerate(text):
+                char_ = char.lower()
+                # wav2vec2 models use "|" character to represent spaces
+                if model_lang not in LANGUAGES_WITHOUT_SPACES:
+                    char_ = char_.replace(" ", "|")
+
+                # ignore whitespace at beginning and end of transcript
+                if cdx < num_leading:
+                    pass
+                elif cdx > len(text) - num_trailing - 1:
+                    pass
+                elif char_ in model_dictionary.keys():
+                    clean_char.append(char_)
+                    clean_cdx.append(cdx)
+                elif char_ not in (" ", "|"):
+                    # unknown char (digit, symbol, foreign script) — use wildcard
+                    clean_char.append(char_)
+                    clean_cdx.append(cdx)
+
+
 
         sentence_spans = list(sentence_splitter.span_tokenize(text))
+        sentence_texts = [
+            text[start:end]
+            for start, end in sentence_spans
+        ]
+
+        word_spans = []
+
+        cursor = 0
+
+        for word in per_word:
+            start = text.find(word, cursor)
+            end = start + len(word)
+
+            word_spans.append((start, end))
+
+            cursor = end
+
+        phoneme_sentence_spans = []
+
+        for sentence_start, sentence_end in sentence_spans:
+
+            sentence_words = []
+
+            for widx, (word_start, word_end) in enumerate(word_spans):
+                if word_start >= sentence_start and word_end <= sentence_end:
+                    sentence_words.append(widx)
+
+            if sentence_words:
+
+                first_word = min(sentence_words)
+                last_word = max(sentence_words)
+
+                phoneme_indices = [
+                    idx
+                    for idx, word_idx in enumerate(clean_wdx)
+                    if first_word <= word_idx <= last_word
+                ]
+
+                if phoneme_indices:
+                    phoneme_sentence_spans.append(
+                        (
+                            min(phoneme_indices),
+                            max(phoneme_indices) + 1
+                        )
+                    )
 
         segment_data[sdx] = {
             "clean_char": clean_char,
             "clean_cdx": clean_cdx,
             "clean_wdx": clean_wdx,
-            "sentence_spans": sentence_spans
+            "sentence_spans": sentence_spans,
+            "sentence_texts": sentence_texts,
+            "phoneme_sentence_spans": phoneme_sentence_spans,
         }
 
     aligned_segments: List[SingleAlignedSegment] = []
@@ -252,7 +315,7 @@ def align(
             aligned_segments.append(aligned_seg)
             continue
 
-        text_clean = "".join(segment_data[sdx]["clean_char"])
+        text_clean = segment_data[sdx]["clean_char"]
 
         f1 = int(t1 * SAMPLE_RATE)
         f2 = int(t2 * SAMPLE_RATE)
@@ -313,21 +376,17 @@ def align(
         # assign timestamps to aligned characters
         char_segments_arr = []
         word_idx = 0
-        for cdx, char in enumerate(text):
-            start, end, score = None, None, None
-            if cdx in segment_data[sdx]["clean_cdx"]:
-                char_seg = char_segments[segment_data[sdx]["clean_cdx"].index(cdx)]
-                start = round(char_seg.start * ratio + t1, 3)
-                end = round(char_seg.end * ratio + t1, 3)
-                score = round(char_seg.score, 3)
+        for cdx, char in enumerate(text_clean):
+
+            segment = char_segments[cdx]
 
             char_segments_arr.append(
                 {
                     "char": char,
-                    "start": start,
-                    "end": end,
-                    "score": score,
-                    "word-idx": word_idx,
+                    "start": round(segment.start * ratio + t1, 3),
+                    "end": round(segment.end * ratio + t1, 3),
+                    "score": round(segment.score, 3),
+                    "word-idx": segment_data[sdx]["clean_wdx"][cdx]
                 }
             )
 
@@ -342,11 +401,12 @@ def align(
         aligned_subsegments = []
         # assign sentence_idx to each character index
         char_segments_arr["sentence-idx"] = None
-        for sdx2, (sstart, send) in enumerate(segment_data[sdx]["sentence_spans"]):
+        for sdx2, (sstart, send) in enumerate(segment_data[sdx]["phoneme_sentence_spans"]):
             curr_chars = char_segments_arr.loc[(char_segments_arr.index >= sstart) & (char_segments_arr.index <= send)]
             char_segments_arr.loc[(char_segments_arr.index >= sstart) & (char_segments_arr.index <= send), "sentence-idx"] = sdx2
 
-            sentence_text = text[sstart:send]
+            # sentence_text = text[sstart:send]
+            sentence_text = segment_data[sdx]["sentence_texts"][sdx2]
             sentence_start = curr_chars["start"].min()
             end_chars = curr_chars[curr_chars["char"] != ' ']
             sentence_end = end_chars["end"].max()
@@ -354,12 +414,12 @@ def align(
 
             for word_idx in curr_chars["word-idx"].unique():
                 word_chars = curr_chars.loc[curr_chars["word-idx"] == word_idx]
-                word_text = "".join(word_chars["char"].tolist()).strip()
+                word_text = per_word[word_idx]
                 if len(word_text) == 0:
                     continue
 
                 # dont use space character for alignment
-                word_chars = word_chars[word_chars["char"] != " "]
+                word_chars = word_chars[~word_chars["char"].isin([" ", "|"])]
 
                 word_start = word_chars["start"].min()
                 word_end = word_chars["end"].max()

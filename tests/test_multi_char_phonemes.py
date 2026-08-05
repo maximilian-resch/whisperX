@@ -1,4 +1,5 @@
 import whisperx
+import numpy as np
 
 
 def test_multichar_tokenizer_available():
@@ -15,3 +16,16 @@ def test_multichar_tokenizer_available():
     tokens = tokenizer.tokenize("einst")
 
     assert tokens[:4] == ["aɪ", "n", "s", "t"]
+
+    dummy_audio = np.zeros(16000, dtype=np.float32)
+
+    alignments = whisperx.align(
+        [{"text": "einst", "start": 0.0, "end": 1.0}],
+        model,
+        metadata,
+        dummy_audio,
+        "cpu",
+        return_char_alignments=True
+    )
+
+    print(alignments)
