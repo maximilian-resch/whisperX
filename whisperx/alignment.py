@@ -102,6 +102,7 @@ def load_align_model(language_code: str, device: str, model_name: Optional[str] 
         try:
             processor = Wav2Vec2Processor.from_pretrained(model_name, cache_dir=model_dir, local_files_only=model_cache_only)
             tokenizer = processor.tokenizer
+            tokenizer.init_backend(language_code)
             align_model = Wav2Vec2ForCTC.from_pretrained(model_name, cache_dir=model_dir, local_files_only=model_cache_only)
         except Exception as e:
             print(e)
@@ -110,7 +111,7 @@ def load_align_model(language_code: str, device: str, model_name: Optional[str] 
         pipeline_type = "huggingface"
         align_model = align_model.to(device)
         labels = processor.tokenizer.get_vocab()
-        align_dictionary = {char.lower(): code for char,code in processor.tokenizer.get_vocab().items()}
+        align_dictionary = {char: code for char,code in processor.tokenizer.get_vocab().items()}
 
     align_metadata = {
         "language": language_code,
@@ -187,14 +188,27 @@ def align(
             per_word = text
 
         if model_tokenizer is not None:
-            clean_char = model_tokenizer.tokenize(text)
+            raw_tokens = model_tokenizer.tokenize(text)
 
+            clean_char = []
             clean_wdx = []
+            clean_real_wdx = []
+            slot_to_text = {}
+
             current_word = 0
-            for token in clean_char:
-                clean_wdx.append(current_word)
+            slot_to_text[current_word] = per_word[0] if per_word else ""
+
+            for token in raw_tokens:
                 if token == "|":
                     current_word += 1
+                    slot_to_text[current_word] = (
+                        per_word[current_word] if current_word < len(per_word) else ""
+                    )
+                    continue
+
+                clean_char.append(token)
+                clean_wdx.append(current_word)
+                clean_real_wdx.append(current_word)
 
             clean_cdx = list(range(len(clean_char)))
 
@@ -259,8 +273,8 @@ def align(
 
                 phoneme_indices = [
                     idx
-                    for idx, word_idx in enumerate(clean_wdx)
-                    if first_word <= word_idx <= last_word
+                    for idx, real_word_idx in enumerate(clean_real_wdx)
+                    if first_word <= real_word_idx <= last_word
                 ]
 
                 if phoneme_indices:
@@ -275,6 +289,8 @@ def align(
             "clean_char": clean_char,
             "clean_cdx": clean_cdx,
             "clean_wdx": clean_wdx,
+            "clean_real_wdx": clean_real_wdx,
+            "slot_to_text": slot_to_text,
             "sentence_spans": sentence_spans,
             "sentence_texts": sentence_texts,
             "phoneme_sentence_spans": phoneme_sentence_spans,
@@ -414,16 +430,11 @@ def align(
 
             for word_idx in curr_chars["word-idx"].unique():
                 word_chars = curr_chars.loc[curr_chars["word-idx"] == word_idx]
-                word_text = per_word[word_idx]
-                if len(word_text) == 0:
-                    continue
-
-                # dont use space character for alignment
-                word_chars = word_chars[~word_chars["char"].isin([" ", "|"])]
+                word_text = segment_data[sdx]["slot_to_text"].get(word_idx, "")
 
                 word_start = word_chars["start"].min()
                 word_end = word_chars["end"].max()
-                word_score = round(word_chars["score"].mean(), 3)
+                word_score = round(word_chars["score"].mean(), 3) if len(word_chars) else np.nan
 
                 # -1 indicates unalignable
                 word_segment = {"word": word_text}
