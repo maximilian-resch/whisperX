@@ -179,11 +179,11 @@ def align(
 
         num_leading = len(segment["text"]) - len(segment["text"].lstrip())
         num_trailing = len(segment["text"]) - len(segment["text"].rstrip())
-        text = segment["text"]
+        text = segment["text"].strip()
 
         # split into words
         if model_lang not in LANGUAGES_WITHOUT_SPACES:
-            per_word = text.split(" ")
+            per_word = text.split()
         else:
             per_word = text
 
@@ -389,11 +389,9 @@ def align(
         duration = t2 - t1
         ratio = duration * waveform_segment.size(0) / (trellis.size(0) - 1)
 
-        # assign timestamps to aligned characters
         char_segments_arr = []
-        word_idx = 0
-        for cdx, char in enumerate(text_clean):
 
+        for cdx, char in enumerate(text_clean):
             segment = char_segments[cdx]
 
             char_segments_arr.append(
@@ -402,15 +400,9 @@ def align(
                     "start": round(segment.start * ratio + t1, 3),
                     "end": round(segment.end * ratio + t1, 3),
                     "score": round(segment.score, 3),
-                    "word-idx": segment_data[sdx]["clean_wdx"][cdx]
+                    "word-idx": segment_data[sdx]["clean_wdx"][cdx],
                 }
             )
-
-            # increment word_idx, nltk word tokenization would probably be more robust here, but us space for now...
-            if model_lang in LANGUAGES_WITHOUT_SPACES:
-                word_idx += 1
-            elif cdx == len(text) - 1 or text[cdx+1] == " ":
-                word_idx += 1
 
         char_segments_arr = pd.DataFrame(char_segments_arr)
 
@@ -418,8 +410,8 @@ def align(
         # assign sentence_idx to each character index
         char_segments_arr["sentence-idx"] = None
         for sdx2, (sstart, send) in enumerate(segment_data[sdx]["phoneme_sentence_spans"]):
-            curr_chars = char_segments_arr.loc[(char_segments_arr.index >= sstart) & (char_segments_arr.index <= send)]
-            char_segments_arr.loc[(char_segments_arr.index >= sstart) & (char_segments_arr.index <= send), "sentence-idx"] = sdx2
+            curr_chars = char_segments_arr.loc[(char_segments_arr.index >= sstart) & (char_segments_arr.index < send)]
+            char_segments_arr.loc[(char_segments_arr.index >= sstart) & (char_segments_arr.index < send), "sentence-idx"] = sdx2
 
             # sentence_text = text[sstart:send]
             sentence_text = segment_data[sdx]["sentence_texts"][sdx2]
